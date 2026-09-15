@@ -44,9 +44,8 @@ OTHER_COLOUR = M["light_grey_2"]
 FONT = "Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
 
 CSS = f"""
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
   html, body, [class*="css"], .stApp, .stMarkdown, .stDataFrame, .stSelectbox,
   .stMultiSelect, .stRadio, .stDateInput, .stButton, .stMetric {{
       font-family: {FONT} !important;
@@ -111,6 +110,17 @@ CSS = f"""
 DB_PATH = os.environ.get("EDGAR_DB", "edgar_notes.sqlite")
 
 
+def default_ua() -> str:
+    """EDGAR_UA from the environment, else from Streamlit secrets."""
+    ua = os.environ.get("EDGAR_UA", "")
+    if not ua:
+        try:
+            ua = st.secrets.get("EDGAR_UA", "")
+        except Exception:      # no secrets.toml locally
+            ua = ""
+    return ua
+
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
@@ -125,16 +135,24 @@ def usd(v: float | None, decimals: int = 1) -> str:
     return f"${v / 1e3:,.0f}k"
 
 
+def html(markup: str) -> None:
+    """Render raw HTML. st.html skips markdown parsing (which otherwise ends an
+    HTML block at the first blank line and prints the rest as text)."""
+    if hasattr(st, "html"):
+        st.html(markup)
+    else:
+        st.markdown("\n".join(l for l in markup.splitlines() if l.strip()),
+                    unsafe_allow_html=True)
+
+
 def eyebrow(text: str) -> None:
-    st.markdown(f'<div class="mx-eyebrow">{text}</div>', unsafe_allow_html=True)
+    html(f'<div class="mx-eyebrow">{text}</div>')
 
 
 def metric_card(label: str, value: str, sub: str = "") -> None:
-    st.markdown(
-        f'<div class="mx-card"><div class="mx-eyebrow">{label}</div>'
-        f'<div class="mx-metric">{value}</div>'
-        f'<div class="mx-metric-sub">{sub}</div></div>',
-        unsafe_allow_html=True)
+    html(f'<div class="mx-card"><div class="mx-eyebrow">{label}</div>'
+         f'<div class="mx-metric">{value}</div>'
+         f'<div class="mx-metric-sub">{sub}</div></div>')
 
 
 def plotly_layout(fig: go.Figure, height: int = 420) -> go.Figure:
@@ -197,16 +215,15 @@ def load(db_path: str, mtime: float) -> pd.DataFrame:
 
 st.set_page_config(page_title="Marex · SEC note issuance", page_icon="◆",
                    layout="wide", initial_sidebar_state="expanded")
-st.markdown(CSS, unsafe_allow_html=True)
+html(CSS)
 
 status = ed.db_status(DB_PATH)
 df_all = load(DB_PATH, status.get("mtime", 0.0))
 
 # ---- Sidebar: filters ----------------------------------------------------- #
 with st.sidebar:
-    st.markdown('<div class="mx-wordmark">MAREX</div>', unsafe_allow_html=True)
-    st.markdown('<div class="mx-caption" style="margin:4px 0 24px">Structured Products · EDGAR monitor</div>',
-                unsafe_allow_html=True)
+    html('<div class="mx-wordmark">MAREX</div>'
+         '<div class="mx-caption" style="margin:4px 0 24px">Structured Products · EDGAR monitor</div>')
 
     eyebrow("Period")
     mode = st.radio("Period", ["Single date", "Date range"], horizontal=True,
@@ -226,7 +243,7 @@ with st.sidebar:
         else:
             start = end = picked
 
-    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+    html("<div style='height:16px'></div>")
     eyebrow("Date basis")
     basis_label = st.selectbox("Date basis", ["Filing date", "Trade / pricing date", "Issue date"],
                                label_visibility="collapsed",
@@ -235,13 +252,13 @@ with st.sidebar:
     basis = {"Filing date": "filed", "Trade / pricing date": "trade_date",
              "Issue date": "issue_date"}[basis_label]
 
-    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+    html("<div style='height:16px'></div>")
     eyebrow("Measure")
     measure_label = st.radio("Measure", ["Notional", "Number of notes"], horizontal=True,
                              label_visibility="collapsed")
     by_notional = measure_label == "Notional"
 
-    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+    html("<div style='height:16px'></div>")
     eyebrow("Scope")
     structured_only = st.toggle("Structured notes only", value=True,
                                 help="Drop vanilla fixed-rate and floating-rate takedowns.")
@@ -253,18 +270,16 @@ with st.sidebar:
     issuer_pick = st.multiselect("Issuers", issuers_all, placeholder="All issuers")
 
     # ---- Sidebar: refresh -------------------------------------------------- #
-    st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
+    html("<div style='height:24px'></div>")
     eyebrow("Data")
     if status.get("exists"):
-        st.markdown(f'<div class="mx-caption">Cache covers <b>{status["first"]}</b> → <b>{status["last"]}</b><br>'
-                    f'{status["parsed"]:,} parsed · {status["filings"]:,} filings · {status["failed"]:,} failed</div>',
-                    unsafe_allow_html=True)
+        html(f'<div class="mx-caption">Cache covers <b>{status["first"]}</b> → <b>{status["last"]}</b><br>'
+             f'{status["parsed"]:,} parsed · {status["filings"]:,} filings · {status["failed"]:,} failed</div>')
     else:
-        st.markdown('<div class="mx-caption">No cache yet — run a refresh below or the CLI.</div>',
-                    unsafe_allow_html=True)
+        html('<div class="mx-caption">No cache yet — pick a date and the app will fetch it.</div>')
 
     with st.expander("Refresh from EDGAR"):
-        ua = st.text_input("EDGAR user agent", value=os.environ.get("EDGAR_UA", ""),
+        ua = st.text_input("EDGAR user agent", value=default_ua(),
                            placeholder="Name name@marex.com",
                            help="EDGAR requires a real name and email in the User-Agent.")
         workers = st.slider("Workers", 1, 8, 4)
@@ -278,6 +293,30 @@ with st.sidebar:
                            state="complete", expanded=False)
             st.cache_data.clear()
             st.rerun()
+
+# ---- Auto-fetch: if nothing has been enumerated for this window, get it --- #
+fetched_now = False
+auto_key = f"fetched:{start}:{end}"
+if not ed.window_cached(DB_PATH, start, end) and not st.session_state.get(auto_key):
+    st.session_state[auto_key] = True          # one attempt per window per session
+    if ua:
+        with st.status(f"Fetching {start} → {end} from EDGAR…", expanded=True) as box:
+            try:
+                result = ed.refresh(DB_PATH, start, end, ua, workers=workers,
+                                    progress=lambda msg: box.write(msg))
+                box.update(label=f"Fetched — {result['parsed']} supplements parsed",
+                           state="complete", expanded=False)
+                fetched_now = True
+            except Exception as exc:        # surface, don't crash the page
+                box.update(label="EDGAR fetch failed", state="error")
+                st.error(f"Could not fetch from EDGAR: {exc}")
+        if fetched_now:
+            st.cache_data.clear()
+            status = ed.db_status(DB_PATH)
+            df_all = load(DB_PATH, status.get("mtime", 0.0))
+    else:
+        st.warning("No EDGAR user agent configured. Set EDGAR_UA in Streamlit secrets "
+                   "(or in the sidebar under *Refresh from EDGAR*) to fetch data.")
 
 # ---- Filter --------------------------------------------------------------- #
 df = df_all.copy()
@@ -296,22 +335,20 @@ def fmt_day(d: date, year: bool = True) -> str:
 
 
 period_txt = fmt_day(start) if start == end else f"{fmt_day(start, False)} – {fmt_day(end)}"
-st.markdown(
-    f'<div class="mx-header"><div>'
-    f'<div class="mx-eyebrow">SEC 424(b)(2) pricing supplements · {basis_label.lower()}</div>'
-    f'<h1>Note issuance, {period_txt}</h1>'
-    f'<div class="mx-lead">{"Structured notes" if structured_only else "All registered notes"}'
-    f'{" · priced only" if exclude_prelim else " · incl. preliminary"}</div>'
-    f'</div><div class="mx-wordmark">MAREX</div></div>',
-    unsafe_allow_html=True)
+html(f'<div class="mx-header"><div>'
+     f'<div class="mx-eyebrow">SEC 424(b)(2) pricing supplements · {basis_label.lower()}</div>'
+     f'<h1>Note issuance, {period_txt}</h1>'
+     f'<div class="mx-lead">{"Structured notes" if structured_only else "All registered notes"}'
+     f'{" · priced only" if exclude_prelim else " · incl. preliminary"}</div>'
+     f'</div><div class="mx-wordmark">MAREX</div></div>')
 
 if df.empty:
-    st.markdown(
-        '<div class="mx-card" style="text-align:center;padding:64px 24px">'
-        '<div class="mx-eyebrow">Nothing in this window</div>'
-        '<div class="mx-lead" style="margin-top:12px">No parsed supplements match these filters. '
-        'Widen the period, switch the date basis, or refresh the cache from the sidebar.</div></div>',
-        unsafe_allow_html=True)
+    reason = ("No 424(b)(2) pricing supplements were filed in this window." if fetched_now
+              else "No parsed supplements match these filters. Widen the period, switch the date basis, "
+                   "or refresh the cache from the sidebar.")
+    html('<div class="mx-card" style="text-align:center;padding:64px 24px">'
+         '<div class="mx-eyebrow">Nothing in this window</div>'
+         f'<div class="mx-lead" style="margin-top:12px">{reason}</div></div>')
     st.stop()
 
 # ---- Headline metrics ----------------------------------------------------- #
@@ -335,7 +372,7 @@ with c4:
     else:
         metric_card("Largest issuer", "—", "no sizes stated in this window")
 
-st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+html("<div style='height:28px'></div>")
 
 # ---- Issuer breakdown: pie + league table --------------------------------- #
 league = (df.groupby("issuer")
@@ -348,7 +385,7 @@ league["share"] = league["notional" if by_notional else "notes"] / \
 left, right = st.columns([5, 6], gap="large")
 with left:
     eyebrow(f"{measure_label} by issuer")
-    st.markdown("<h2>Issuer mix</h2>", unsafe_allow_html=True)
+    html("<h2>Issuer mix</h2>")
     series = league["notional" if by_notional else "notes"]
     series = group_other(series[series > 0], min_share)
     fig = donut(list(series.index), list(series.values),
@@ -360,7 +397,7 @@ with left:
 
 with right:
     eyebrow("League table")
-    st.markdown("<h2>Breakdown per issuer</h2>", unsafe_allow_html=True)
+    html("<h2>Breakdown per issuer</h2>")
     table = league.reset_index().rename(columns={
         "issuer": "Issuer", "notes": "Notes", "notional": "Notional",
         "median_ticket": "Median ticket", "median_tenor": "Median tenor (y)", "share": "Share"})
@@ -374,11 +411,11 @@ with right:
             "Share": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=1),
         })
 
-st.markdown("<div style='height:36px'></div>", unsafe_allow_html=True)
+html("<div style='height:36px'></div>")
 
 # ---- Payoff / asset-class mix -------------------------------------------- #
 eyebrow("Product mix")
-st.markdown("<h2>What was issued</h2>", unsafe_allow_html=True)
+html("<h2>What was issued</h2>")
 m1, m2 = st.columns(2, gap="large")
 for col, field, title in ((m1, "family", "Payoff family"), (m2, "asset_class", "Underlying asset class")):
     with col:
@@ -391,11 +428,11 @@ for col, field, title in ((m1, "family", "Payoff family"), (m2, "asset_class", "
         st.plotly_chart(plotly_layout(fig, height=340), use_container_width=True,
                         config={"displayModeBar": False})
 
-st.markdown("<div style='height:36px'></div>", unsafe_allow_html=True)
+html("<div style='height:36px'></div>")
 
 # ---- Drill-down ----------------------------------------------------------- #
 eyebrow("Drill-down")
-st.markdown("<h2>Products issued</h2>", unsafe_allow_html=True)
+html("<h2>Products issued</h2>")
 sel = st.selectbox("Issuer", ["All issuers"] + list(league.index), label_visibility="collapsed")
 detail = df if sel == "All issuers" else df[df["issuer"] == sel]
 
@@ -404,9 +441,8 @@ if sel != "All issuers":
     pills = [f"{int(row['notes'])} notes", f"{usd(row['notional'])} notional", f"{row['share']:.1%} share"]
     if pd.notna(row["median_tenor"]):
         pills.append(f"median tenor {row['median_tenor']:.1f}y")
-    st.markdown(" &nbsp;".join(f'<span class="mx-pill">{p}</span>' for p in pills),
-                unsafe_allow_html=True)
-    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+    html(" &nbsp;".join(f'<span class="mx-pill">{p}</span>' for p in pills)
+         + "<div style='height:12px'></div>")
 
 show_cols = ["isin", "issuer", "product", "family", "asset_class", "size_usd",
              "trade_date", "issue_date", "maturity_date", "tenor_years",
@@ -429,7 +465,7 @@ st.dataframe(
     })
 
 # ---- Export --------------------------------------------------------------- #
-st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+html("<div style='height:16px'></div>")
 e1, e2, _ = st.columns([2, 2, 8])
 stem = f"issuance_{start.isoformat()}" + ("" if start == end else f"_{end.isoformat()}")
 with e1:
@@ -439,9 +475,8 @@ with e2:
     st.download_button("Download league table (CSV)", table.to_csv(index=False).encode(),
                        f"{stem}_issuers.csv", "text/csv", use_container_width=True)
 
-st.markdown(
-    f'<div class="mx-caption" style="margin-top:40px;padding-top:20px;border-top:1px solid {M["light_grey"]}">'
-    'Source: SEC EDGAR 424(b)(2) pricing supplements, parsed from cover pages. Sizes reflect the stated '
-    'aggregate principal amount or the filing-fee exhibit where the cover has no total; some supplements '
-    'carry no size and are counted but not summed. Preliminary and final supplements for the same ISIN are merged.'
-    '</div>', unsafe_allow_html=True)
+html(f'<div class="mx-caption" style="margin-top:40px;padding-top:20px;border-top:1px solid {M["light_grey"]}">'
+     'Source: SEC EDGAR 424(b)(2) pricing supplements, parsed from cover pages. Sizes reflect the stated '
+     'aggregate principal amount or the filing-fee exhibit where the cover has no total; some supplements '
+     'carry no size and are counted but not summed. Preliminary and final supplements for the same ISIN are merged.'
+     '</div>')
