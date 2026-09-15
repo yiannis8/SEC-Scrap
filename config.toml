@@ -1,0 +1,10 @@
+[theme]
+# Marex Design System tokens
+primaryColor = "#793690"            # marex-purple: accents, buttons, focus rings only
+backgroundColor = "#F5F5F8"         # marex-cloud: page background
+secondaryBackgroundColor = "#FFFFFF" # marex-white: cards / sidebar
+textColor = "#1C1B4A"               # marex-dark-blue: ink
+font = "sans serif"
+
+[server]
+headless = true
