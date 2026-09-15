@@ -36,8 +36,17 @@ COLS = en.COLS + ["filings"]
 def _merge_prelim_final(rows: list[dict]) -> list[dict]:
     """One row per ISIN/CUSIP; a note filed preliminary then final appears
     twice in the cache. Field-wise merge, final filing wins on priced fields.
-    Mirrors edgar_notes.export(dedupe=True)."""
+    Mirrors edgar_notes.export(dedupe=True) — with one correction: the
+    generic merge below skips any value equal to False (treating it as
+    "empty", which is right for text fields but wrong for the `preliminary`
+    flag itself). Left as-is, a note that was ever filed preliminary would
+    stay flagged preliminary=True forever, even after a final priced filing
+    for the same ISIN arrives, silently breaking any "exclude preliminary"
+    filter. `has_final` is tracked separately and applied after the loop so
+    it can't be skipped by that rule.
+    """
     merged: dict[str, dict] = {}
+    has_final: dict[str, bool] = {}
     loose: list[dict] = []
     for r in rows:
         key = r.get("isin") or r.get("cusip")
@@ -47,27 +56,33 @@ def _merge_prelim_final(rows: list[dict]) -> list[dict]:
             continue
         m = merged.setdefault(key, {})
         final = not r.get("preliminary")
+        has_final[key] = has_final.get(key, False) or final
         for k, v in r.items():
-            if v in (None, "", False):
+            if k == "preliminary" or v in (None, "", False):
                 continue
             if k not in m or m[k] in (None, "", False) or (
-                final and k in ("size_usd", "preliminary", "url", "filed",
+                final and k in ("size_usd", "url", "filed",
                                 "accession", "estimated_initial_value")):
                 m[k] = v
         m["filings"] = m.get("filings", 0) + 1
+    for key, m in merged.items():
+        m["preliminary"] = not has_final[key]
     return list(merged.values()) + loose
 
 
 def load_notes(db_path: str, dedupe: bool = True) -> pd.DataFrame:
     """All parsed notes as a DataFrame with proper dtypes. Empty frame with the
-    right columns if the database does not exist yet."""
-    if not os.path.exists(db_path):
-        return pd.DataFrame(columns=COLS)
-    con = en.db_connect(db_path)
-    try:
-        rows = [json.loads(p) for (p,) in con.execute("SELECT payload FROM parsed")]
-    finally:
-        con.close()
+    right columns and dtypes if the database does not exist yet — this must
+    stay on the same code path as the non-empty case below, since an empty
+    DataFrame with object-dtype boolean columns silently drops all columns
+    (not just rows) under boolean indexing in pandas."""
+    rows: list[dict] = []
+    if os.path.exists(db_path):
+        con = en.db_connect(db_path)
+        try:
+            rows = [json.loads(p) for (p,) in con.execute("SELECT payload FROM parsed")]
+        finally:
+            con.close()
     if dedupe:
         rows = _merge_prelim_final(rows)
     df = pd.DataFrame(rows)
