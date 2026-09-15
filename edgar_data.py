@@ -16,7 +16,7 @@ import json
 import os
 import re
 import threading
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Callable
 
 import pandas as pd
@@ -149,12 +149,89 @@ def set_user_agent(ua: str) -> None:
         s.headers["User-Agent"] = ua
 
 
+DAILY_INDEX_MAX_DAYS = 14   # below this, per-day index files beat the ~50 MB quarterly one
+
+
+def _index_rows(txt: str, start: date, end: date, forms: set[str],
+                issuer_re: re.Pattern | None) -> list[tuple]:
+    """Parse a master.idx body (quarterly or daily — same pipe format)."""
+    rows = []
+    for line in txt.splitlines():
+        parts = line.split("|")
+        if len(parts) != 5:
+            continue
+        cik, name, form, filed, fname = (p.strip() for p in parts)
+        if form not in forms:
+            continue
+        try:
+            fdate = datetime.strptime(filed, "%Y-%m-%d").date()
+        except ValueError:
+            # daily files use YYYYMMDD
+            try:
+                fdate = datetime.strptime(filed, "%Y%m%d").date()
+            except ValueError:
+                continue
+        if not (start <= fdate <= end):
+            continue
+        if issuer_re and not issuer_re.search(name):
+            continue
+        m = re.search(r"(\d{10}-\d{2}-\d{6})", fname)
+        if not m:
+            continue
+        rows.append((m.group(1), cik, name, form, fdate.isoformat(), None, None))
+    return rows
+
+
+def enumerate_daily(con, start: date, end: date, forms: set[str],
+                    issuer_re: re.Pattern | None,
+                    log: Callable[[str], None]) -> int:
+    """Populate `filings` from EDGAR's daily index files, one per business day.
+    Weekends/holidays 404 and are skipped."""
+    added = 0
+    d = start
+    while d <= end:
+        if d.weekday() < 5:
+            q = (d.month - 1) // 3 + 1
+            url = (f"{en.SEC}/Archives/edgar/daily-index/{d.year}/QTR{q}/"
+                   f"master.{d:%Y%m%d}.idx")
+            txt = en.fetch(url)
+            if txt:
+                rows = _index_rows(txt, start, end, forms, issuer_re)
+                with con:
+                    cur = con.executemany(
+                        "INSERT OR IGNORE INTO filings "
+                        "(accession,cik,issuer,form,filed,primary_doc,doc_url) "
+                        "VALUES (?,?,?,?,?,?,?)", rows)
+                n = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+                added += n
+                log(f"{d:%a %d %b}: {len(rows)} pricing supplements filed")
+            else:
+                log(f"{d:%a %d %b}: no index (holiday or not yet published)")
+        d += timedelta(days=1)
+    return added
+
+
+def window_cached(db_path: str, start: date, end: date) -> bool:
+    """True if the filings table already has anything filed in this window —
+    used by the app to decide whether an automatic fetch is needed."""
+    if not os.path.exists(db_path):
+        return False
+    con = en.db_connect(db_path)
+    try:
+        n, = con.execute("SELECT COUNT(*) FROM filings WHERE filed BETWEEN ? AND ?",
+                         (start.isoformat(), end.isoformat())).fetchone()
+    finally:
+        con.close()
+    return n > 0
+
+
 def refresh(db_path: str, start: date, end: date, ua: str,
             workers: int = 4, structured_forms: str = "424B2",
             issuer_re: str | None = None,
             progress: Callable[[str], None] | None = None) -> dict:
     """Enumerate, resolve and crawl the window. Resumable — anything already
-    cached is skipped. Returns counts for the app to display."""
+    cached is skipped. Short windows use the daily index files; long ones the
+    quarterly index. Returns counts for the app to display."""
     log = progress or (lambda msg: None)
     set_user_agent(ua)
     con = en.db_connect(db_path)
@@ -162,8 +239,12 @@ def refresh(db_path: str, start: date, end: date, ua: str,
         forms = {f.strip().upper() for f in structured_forms.split(",")}
         pat = re.compile(issuer_re, re.I) if issuer_re else None
 
-        log(f"Reading EDGAR index for {start} → {end}")
-        added = en.enumerate_filings(con, start, end, forms, pat)
+        if (end - start).days < DAILY_INDEX_MAX_DAYS:
+            log(f"Reading EDGAR daily indexes for {start} → {end}")
+            added = enumerate_daily(con, start, end, forms, pat, log)
+        else:
+            log(f"Reading EDGAR quarterly index for {start} → {end}")
+            added = en.enumerate_filings(con, start, end, forms, pat)
 
         log("Resolving document names")
         en.resolve_docs(con)
